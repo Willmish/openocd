@@ -106,9 +106,13 @@ static int spi_xfer(struct target *target, const uint8_t *tx, uint32_t tx_len, u
 		target_write_u32(target, CTRLR0, CTRLR0_TMOD_TX | ctrlr0_mode);
 	}
 
-	spi_wait_until_txfifo_empty(target);
+	err = spi_wait_until_txfifo_empty(target);
+    //LOG_INFO("spi_wait_until_txfifo_empty: %d", err);
 	if (ERROR_OK != err)
+    {
+        LOG_INFO("spi_wait_until_txfifo_empty failed\n");
 		return err;
+    }
 
 	/* enable peripheral */
 	target_write_u32(target, SSIENR, SSIENR_SSI_EN);
@@ -122,20 +126,30 @@ static int spi_xfer(struct target *target, const uint8_t *tx, uint32_t tx_len, u
 	/* enable slave select */
 	target_write_u32(target, SER, SER_SS_0_N_SELECTED);
 
-	spi_wait_until_txfifo_empty(target);
+	err = spi_wait_until_txfifo_empty(target);
 	if (ERROR_OK != err)
+    {
+        LOG_INFO("spi_wait_until_txfifo_empty failed\n");
 		return err;
+    }
+    //LOG_INFO("Done spi_wait_until_txfifo_empty and tx_len = %d\n", tx_len);
 
 	/* retrieve data from RX FIFO */
 	while (rx_len) {
 		uint32_t status;
 		err = target_read_u32(target, SR, &status);
 		if (ERROR_OK != err)
+        {
+            LOG_INFO("target_read_u32 failed\n");
 			break;
+        }
 		if (status & SR_RFNE) {
 			err = target_read_u8(target, DR0, rx++);
 			if (ERROR_OK != err)
+            {
+                LOG_INFO("target_read_u8 failed\n");
 				break;
+            }
 			rx_len--;
 		}
 	}
@@ -309,12 +323,28 @@ static int eoss3_flash_probe(struct flash_bank *bank)
 	device_id |= resp[1] << 8;
 	device_id |= resp[0] << 0;
 
+    LOG_INFO("Required device ID: 0x%06x", device_id);
+	/*
+	 * note: device id is usually 3 bytes long, however the unused highest byte counts
+	 * continuation codes for manufacturer id as per JEP106xx
+     * name, read_cmd, qread_cmd, pprog_cmd, erase_cmd, chip_erase_cmd, device_id, pagesize, sectorsize, size_in_bytes*/
+    // we want to find this: FLASH_ID("gd gd25q16c",0x03, 0x00, 0x02, 0xd8, 0xc7, 0x001540c8, 0x100, 0x10000, 0x200000),
+    LOG_INFO("We want: 0x001540c8");
 	priv->dev = NULL;
 	for (const struct flash_device *p = flash_devices; p->name ; p++)
+    {
+        // Magic selection of correct device (even though we didnt find the correct ID)
+        //if (p->device_id == 0x001540c8) {
+        //    LOG_INFO("SELECTING DEVICE: %s", p->name);
+        //    priv->dev = p;
+        //    break;
+        //}
+
 		if (p->device_id == device_id) {
 			priv->dev = p;
 			break;
 		}
+    }
 
 	if (!priv->dev) {
 		LOG_ERROR("Unknown flash device (ID 0x%08" PRIx32 ")", device_id);
@@ -356,7 +386,7 @@ static void eoss3_flash_free_driver_priv(struct flash_bank *bank)
 	bank->driver_priv = NULL;
 }
 
-struct flash_driver eoss3_flash = {
+const struct flash_driver eoss3_flash = {
 	.name = "eoss3",
 	.flash_bank_command = eoss3_flash_bank_command,
 	.erase = eoss3_flash_erase,
