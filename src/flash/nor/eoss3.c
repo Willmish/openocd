@@ -311,12 +311,103 @@ static int eoss3_flash_probe(struct flash_bank *bank)
 	struct target *target = bank->target;
 	int err;
 
-	uint8_t cmd[1] = { SPIFLASH_READ_ID };
-	uint8_t resp[4] = { 0, 0, 0, 0 };
+    uint32_t comp_version = 0;
+    for (uint32_t i = 0x0; i < 0x064; i+=0x04) {
+    err = target_read_u32(target, SPI_MS_BASE+i, &comp_version);
+    if (ERROR_OK != err) {
+        LOG_ERROR("Failed to read SPI_MS_BASE+0x%08x", i);
+        return err;
+    }
+    LOG_INFO("SPI_MS_BASE+0x%08x = 0x%08x", i, comp_version);
+    
+    }
 
+	//uint8_t cmd[1] = { SPIFLASH_READ_ID };
+	uint8_t resp[4] = { 0, 0, 0, 0 };
+    int rx_len = sizeof(resp);
+    uint8_t* rx = resp;
+
+    LOG_INFO("Writing disable SSIENR");
+    err = target_write_u32(target, SSIENR, 0x0);
+    if (ERROR_OK != err) {
+        LOG_ERROR("Failed to disable SSIENR");
+        return err;
+    }
+
+    LOG_INFO("Writing enable EEPROM mode");
+    err = target_write_u32(target, CTRLR0, 0x307);
+    //LOG_INFO("Writing enable Read/Write mode");
+    //err = target_write_u32(target, CTRLR0, 0x007);
+    if (ERROR_OK != err) {
+        LOG_ERROR("Failed to set CTRL0");
+        return err;
+    }
+    //target_write_u32(target, CTRLR0, ((tx_len) ? CTRLR0_TMOD_EEPROM : CTRLR0_TMOD_RX) | ctrlr0_mode);
+    target_write_u32(target, CTRLR1, rx_len - 1);
+    
+    LOG_INFO("Writing set BAUD rate");
+    err = target_write_u8(target, SPI_MS_BASE+0x014, 0x2);
+    if (ERROR_OK != err) {
+        LOG_ERROR("Failed to set BAUDR");
+        return err;
+    }
+
+    // disable SPI slave flag until transmit fifo written
+    LOG_INFO("Writing disable slave flag");
+    err = target_write_u8(target, SPI_MS_BASE+0x010, 0x0);
+
+    // Enable SPI
+    LOG_INFO("Writing enable SSIENR");
+    err = target_write_u8(target, SSIENR, 0x1);
+
+    // Write the command
+    LOG_INFO("Writing command");
+    err = target_write_u16(target, SPI_MS_BASE+0x060, 0x9F);
+    // Select slave device
+    LOG_INFO("Writing slave select");
+    err = target_write_u32(target, SPI_MS_BASE+0x010, 0x1); // TODO: what slave id to use?
+    if (ERROR_OK != err) {
+        LOG_ERROR("Failed to set SPI_MS_BASE+0x010");
+        return err;
+    }
+
+    err = spi_wait_until_txfifo_empty(target);
+    if (ERROR_OK != err) {
+        LOG_ERROR("Failed to wait for TX FIFO to empty");
+        return err;
+    }
+
+    LOG_INFO("Reading response");
+	/* retrieve data from RX FIFO */
+	while (rx_len) {
+		uint32_t status;
+		err = target_read_u32(target, SR, &status);
+		if (ERROR_OK != err)
+        {
+            LOG_INFO("target_read_u32 failed\n");
+			break;
+        }
+		if (status & SR_RFNE) {
+			err = target_read_u8(target, DR0, rx++);
+			if (ERROR_OK != err)
+            {
+                LOG_INFO("target_read_u8 failed\n");
+				break;
+            }
+			rx_len--;
+		}
+	}
+    LOG_INFO("FINISHED READING ID FROM TARGET\n");
+    for (int i = 0; i<4; i++)
+    {
+        LOG_INFO("resp[%d] = 0x%x\n", i, resp[i]);
+    }
+
+    /*
 	err = spi_xfer(target, cmd, sizeof(cmd), resp, sizeof(resp));
 	if (ERROR_OK != err)
 		return err;
+    */
 
 	uint32_t device_id;
 	device_id  = resp[2] << 16;
